@@ -10,5 +10,5 @@ PulseTree = cms.EDAnalyzer('PulseTree',
                            processEB = cms.untracked.bool(True),
                            EBDigiCollection = cms.untracked.InputTag("ecalDigis","ebDigis"),
                            processEE = cms.untracked.bool(True),
-                           EEDigiCollection = cms.untracked.InputTag("ecalDigis,","eeDigis"),
+                           EEDigiCollection = cms.untracked.InputTag("ecalDigis","eeDigis"),
                            )
