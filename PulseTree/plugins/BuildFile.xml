@@ -3,4 +3,8 @@
 <use name="FWCore/ParameterSet"/>
 <use name="CommonTools/UtilAlgos"/>
 <use name="DataFormats/EcalDigi"/>
+<use name="DataFormats/EcalRecHit"/>
+<use name="Geometry/Records"/>
+<use name="Geometry/CaloGeometry"/>
+<use name="Geometry/EcalAlgo"/>
 <flags EDM_PLUGIN="1"/>

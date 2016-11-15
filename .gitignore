@@ -1,0 +1,13 @@
+__init__.py
+*.pyc
+.*.swp
+.#*
+#*#
+*~
+*DS_Store
+.*.so
+.*.d
+.*.pcm
+*.so
+*.pcm
+*.d

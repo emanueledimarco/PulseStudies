@@ -26,10 +26,19 @@
 
 #include "FWCore/Framework/interface/Event.h"
 #include "FWCore/Framework/interface/MakerMacros.h"
+#include "FWCore/Framework/interface/ESHandle.h"
 
 #include "FWCore/ParameterSet/interface/ParameterSet.h"
 
 #include "DataFormats/EcalDigi/interface/EcalDigiCollections.h"
+#include "DataFormats/EcalRecHit/interface/EcalRecHitCollections.h"
+
+#include "Geometry/Records/interface/CaloGeometryRecord.h"
+#include "Geometry/CaloGeometry/interface/CaloSubdetectorGeometry.h"
+#include "Geometry/CaloGeometry/interface/CaloCellGeometry.h"
+#include "Geometry/CaloGeometry/interface/CaloGeometry.h"
+#include "Geometry/EcalAlgo/interface/EcalBarrelGeometry.h"
+#include "Geometry/EcalAlgo/interface/EcalEndcapGeometry.h"
 
 #include "TTree.h"
 
@@ -56,7 +65,7 @@ class PulseTree : public edm::one::EDAnalyzer<edm::one::SharedResources>  {
       virtual void analyze(const edm::Event&, const edm::EventSetup&) override;
       virtual void endJob() override;
 
-  void FillDigi(EcalDataFrame digi);
+  void FillDigi(EcalDataFrame digi, const EcalUncalibratedRecHitCollection *rechits, const EcalUncalibratedRecHitCollection *w_rechits);
   bool FilterBx(unsigned bx);
   void WriteAverageOutput();
 
@@ -64,24 +73,33 @@ class PulseTree : public edm::one::EDAnalyzer<edm::one::SharedResources>  {
 
   edm::EDGetTokenT<EBDigiCollection> tok_ebdigis_;
   edm::EDGetTokenT<EEDigiCollection> tok_eedigis_;
+  edm::EDGetTokenT<EcalUncalibratedRecHitCollection> tok_ebrechits_;
+  edm::EDGetTokenT<EcalUncalibratedRecHitCollection> tok_w_ebrechits_;
+  edm::EDGetTokenT<EcalUncalibratedRecHitCollection> tok_eerechits_;
+  edm::EDGetTokenT<EcalUncalibratedRecHitCollection> tok_w_eerechits_;
   bool do_EB;
   bool do_EE;
   bool do_average;
   bool split_lumis;
   bool do_filter_bx;
   UInt_t n_pedestal_samples;
+  bool save_rechits;
 
   TTree *outTree;
   UInt_t t_run;
   UShort_t t_lumi;
   UShort_t t_bx;
   UInt_t t_id;
+  float t_eta;
+  float t_phi;
   float t_pulse[10];
   float t_gain[10];
   float t_pedestal;
   float t_pedestal_rms;
   UShort_t t_gainmask;
   UInt_t t_nevt;
+  float t_multifit[10];
+  float t_weights;
 
   std::vector<std::pair<UInt_t,UShort_t> > summed_index; // key: (id,gain[0])
   std::vector<std::vector<double> > summed_pulses;
@@ -90,10 +108,14 @@ class PulseTree : public edm::one::EDAnalyzer<edm::one::SharedResources>  {
   std::vector<long> summed_count;
   float min_amplitude_in_average;
 
+  float min_rechit_amplitude_weights;
+
   UShort_t old_lumi;
   std::vector<unsigned> bx_to_keep;
   bool bx_invert_selection;
   std::vector<UShort_t> seen_lumis;
+
+  edm::ESHandle<CaloGeometry> geometry;
 
 };
 
@@ -122,22 +144,38 @@ PulseTree::PulseTree(const edm::ParameterSet& iConfig)
    min_amplitude_in_average = iConfig.getUntrackedParameter<double>("minAmplitudeForAverage",-9e9);
    old_lumi = 0;
 
+   min_rechit_amplitude_weights = iConfig.getUntrackedParameter<double>("minRecHitAmplitudeWeights",-9e9);
+
    do_EB = iConfig.getUntrackedParameter<bool>("processEB",true);
    do_EE = iConfig.getUntrackedParameter<bool>("processEE",true);
-   if (do_EB) tok_ebdigis_ = consumes<EBDigiCollection>(iConfig.getUntrackedParameter<edm::InputTag>("EBDigiCollection",edm::InputTag("ecalDigis","ebDigis")));
-   if (do_EE) tok_eedigis_ = consumes<EEDigiCollection>(iConfig.getUntrackedParameter<edm::InputTag>("EEDigiCollection",edm::InputTag("ecalDigis","eeDigis")));
+   if (do_EB) tok_ebdigis_ = consumes<EBDigiCollection>(iConfig.getParameter<edm::InputTag>("EBDigiCollection"));
+   if (do_EE) tok_eedigis_ = consumes<EEDigiCollection>(iConfig.getParameter<edm::InputTag>("EEDigiCollection"));
+
+   save_rechits = iConfig.getUntrackedParameter<bool>("saveRecHits",false) && (!do_average);
+   if (save_rechits) {
+     tok_ebrechits_ = consumes<EcalUncalibratedRecHitCollection>(edm::InputTag("ecalMultiFitUncalibRecHit","EcalUncalibRecHitsEB"));
+     tok_w_ebrechits_ = consumes<EcalUncalibratedRecHitCollection>(edm::InputTag("ecalUncalibRecHit","EcalUncalibRecHitsEB"));
+     tok_eerechits_ = consumes<EcalUncalibratedRecHitCollection>(edm::InputTag("ecalMultiFitUncalibRecHit","EcalUncalibRecHitsEE"));
+     tok_w_eerechits_ = consumes<EcalUncalibratedRecHitCollection>(edm::InputTag("ecalUncalibRecHit","EcalUncalibRecHitsEE"));
+   }
 
    outTree = fs->make<TTree>("pulses","pulses");
    outTree->Branch("run",&t_run,"run/i");
    if (!do_average || split_lumis) outTree->Branch("lumi",&t_lumi,"lumi/s");
    if (!do_average) outTree->Branch("bx",&t_bx,"bx/s");
    outTree->Branch("id",&t_id,"id/i");
+   outTree->Branch("eta",&t_eta,"eta/F");
+   outTree->Branch("phi",&t_phi,"phi/F");
    outTree->Branch("pulse",t_pulse,"pulse[10]/F");
    outTree->Branch("gain",t_gain,"gain[10]/F");
    outTree->Branch("pedestal",&t_pedestal,"pedestal/F");
    if (do_average) outTree->Branch("pedestal_rms",&t_pedestal_rms,"pedestal_rms/F");
    if (!do_average) outTree->Branch("gainmask",&t_gainmask,"gainmask/s");
    if (do_average) outTree->Branch("nevt",&t_nevt,"nevt/i");
+   if (save_rechits) {
+     outTree->Branch("ampl_multifit",t_multifit,"ampl_multifit[10]/F");
+     outTree->Branch("ampl_weights",&t_weights,"ampl_weights/F");
+   }
 
    bx_to_keep = iConfig.getUntrackedParameter<std::vector<unsigned> >("filterBx",std::vector<unsigned>());
    bx_invert_selection = iConfig.getUntrackedParameter<bool>("invertBxSelection",false);
@@ -165,6 +203,8 @@ PulseTree::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetup)
 {
    using namespace edm;
 
+   iSetup.get<CaloGeometryRecord>().get(geometry);
+
    t_run = iEvent.eventAuxiliary().run();
    t_lumi = iEvent.eventAuxiliary().luminosityBlock();
    t_bx = iEvent.eventAuxiliary().bunchCrossing();
@@ -185,21 +225,39 @@ PulseTree::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetup)
 
    Handle<EBDigiCollection> ebdigihandle;
    Handle<EEDigiCollection> eedigihandle;
+   Handle<EcalUncalibratedRecHitCollection> ebrechithandle;
+   Handle<EcalUncalibratedRecHitCollection> w_ebrechithandle;
+   const EcalUncalibratedRecHitCollection *ebrechits = NULL;
+   const EcalUncalibratedRecHitCollection *w_ebrechits = NULL;
+   Handle<EcalUncalibratedRecHitCollection> eerechithandle;
+   Handle<EcalUncalibratedRecHitCollection> w_eerechithandle;
+   const EcalUncalibratedRecHitCollection *eerechits = NULL;
+   const EcalUncalibratedRecHitCollection *w_eerechits = NULL;
+   if (save_rechits){
+     iEvent.getByToken(tok_ebrechits_,ebrechithandle);
+     ebrechits = ebrechithandle.product();
+     iEvent.getByToken(tok_w_ebrechits_,w_ebrechithandle);
+     w_ebrechits = w_ebrechithandle.product();
+     iEvent.getByToken(tok_eerechits_,eerechithandle);
+     eerechits = eerechithandle.product();
+     iEvent.getByToken(tok_w_eerechits_,w_eerechithandle);
+     w_eerechits = w_eerechithandle.product();
+   }
    if (do_EB){
      iEvent.getByToken(tok_ebdigis_,ebdigihandle);
      auto ebdigis = ebdigihandle.product();
-     for (uint i=0; i<ebdigis->size(); i++) FillDigi((*ebdigis)[i]);
+     for (uint i=0; i<ebdigis->size(); i++) FillDigi((*ebdigis)[i],ebrechits,w_ebrechits);
    }
    if (do_EE){
      iEvent.getByToken(tok_eedigis_,eedigihandle);
      auto eedigis = eedigihandle.product();
-     for (uint i=0; i<eedigis->size(); i++) FillDigi((*eedigis)[i]);
+     for (uint i=0; i<eedigis->size(); i++) FillDigi((*eedigis)[i],eerechits,w_eerechits);
    }
 
 }
 
 void
-PulseTree::FillDigi(EcalDataFrame digi){
+PulseTree::FillDigi(EcalDataFrame digi, const EcalUncalibratedRecHitCollection *rechits, const EcalUncalibratedRecHitCollection *w_rechits){
 
   t_id = UInt_t(digi.id());
   t_gainmask = 0;
@@ -218,6 +276,22 @@ PulseTree::FillDigi(EcalDataFrame digi){
   t_nevt = 0;
 
   if (!do_average) {
+    auto detid = DetId(t_id);
+    if (save_rechits){
+      for (int j=0; j<10; j++) t_multifit[j] = 0;
+      t_weights = 0;
+      auto subGeom =  geometry->getSubdetectorGeometry(detid);
+      auto cellGeom = subGeom->getGeometry(detid);
+      t_eta = cellGeom->getPosition().eta();
+      t_phi = cellGeom->getPosition().phi();
+      auto it = rechits->find(detid);
+      if (it==rechits->end()) std::cout << "Warning: rechit (multifit) not found" << std::endl;
+      else for (int j=0; j<10; j++) t_multifit[j] = (j==5) ? it->amplitude() : it->outOfTimeAmplitude(j);
+      auto it2 = w_rechits->find(detid);
+      if (it2==w_rechits->end()) std::cout << "Warning: rechit (weights) not found" << std::endl;
+      else t_weights = it2->amplitude();
+      if (t_weights<min_rechit_amplitude_weights) return;
+    }
     outTree->Fill();
   }
   else {
@@ -254,6 +328,8 @@ PulseTree::WriteAverageOutput(){
 
   t_gainmask = 0;
   t_bx = 0;
+  for (int j=0; j<10; j++) t_multifit[j] = 0;
+  t_weights = 0;
 
   for (uint idx = 0; idx<summed_count.size(); idx++){
     float den = summed_count[idx];
@@ -264,6 +340,11 @@ PulseTree::WriteAverageOutput(){
     t_pedestal = summed_pedestal[idx].first/den;
     t_pedestal_rms = std::sqrt(summed_pedestal[idx].second/den - std::pow(summed_pedestal[idx].first/den,2));
     t_id = summed_index[idx].first;
+    auto detid = DetId(t_id);
+    auto subGeom =  geometry->getSubdetectorGeometry(detid);
+    auto cellGeom = subGeom->getGeometry(detid);
+    t_eta = cellGeom->getPosition().eta();
+    t_phi = cellGeom->getPosition().phi();
     t_nevt = summed_count[idx];
     outTree->Fill();
   }
