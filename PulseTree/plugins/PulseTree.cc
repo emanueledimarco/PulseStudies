@@ -32,6 +32,9 @@
 
 #include "DataFormats/EcalDigi/interface/EcalDigiCollections.h"
 #include "DataFormats/EcalRecHit/interface/EcalRecHitCollections.h"
+#include "CondFormats/EcalObjects/interface/EcalMGPAGainRatio.h"
+#include "CondFormats/EcalObjects/interface/EcalGainRatios.h"
+#include "CondFormats/DataRecord/interface/EcalGainRatiosRcd.h"
 
 #include "Geometry/Records/interface/CaloGeometryRecord.h"
 #include "Geometry/CaloGeometry/interface/CaloSubdetectorGeometry.h"
@@ -69,6 +72,8 @@ class PulseTree : public edm::one::EDAnalyzer<edm::one::SharedResources>  {
   bool FilterBx(unsigned bx);
   void WriteAverageOutput();
 
+  float MultiFitParametricCorrection(float amplitude_multifit_intime_uncal, float eta);
+
       // ----------member data ---------------------------
 
   edm::EDGetTokenT<EBDigiCollection> tok_ebdigis_;
@@ -90,6 +95,7 @@ class PulseTree : public edm::one::EDAnalyzer<edm::one::SharedResources>  {
   UShort_t t_lumi;
   UShort_t t_bx;
   UInt_t t_id;
+  float t_gainratios[2];
   float t_eta;
   float t_phi;
   float t_pulse[10];
@@ -100,6 +106,7 @@ class PulseTree : public edm::one::EDAnalyzer<edm::one::SharedResources>  {
   UInt_t t_nevt;
   float t_multifit[10];
   float t_weights;
+  float t_corrected_multifit;
 
   std::vector<std::pair<UInt_t,UShort_t> > summed_index; // key: (id,gain[0])
   std::vector<std::vector<double> > summed_pulses;
@@ -116,6 +123,7 @@ class PulseTree : public edm::one::EDAnalyzer<edm::one::SharedResources>  {
   std::vector<UShort_t> seen_lumis;
 
   edm::ESHandle<CaloGeometry> geometry;
+  edm::ESHandle<EcalGainRatios> gRatio;
 
 };
 
@@ -164,6 +172,7 @@ PulseTree::PulseTree(const edm::ParameterSet& iConfig)
    if (!do_average || split_lumis) outTree->Branch("lumi",&t_lumi,"lumi/s");
    if (!do_average) outTree->Branch("bx",&t_bx,"bx/s");
    outTree->Branch("id",&t_id,"id/i");
+   outTree->Branch("gainratios",t_gainratios,"gainratios[2]/F");
    outTree->Branch("eta",&t_eta,"eta/F");
    outTree->Branch("phi",&t_phi,"phi/F");
    outTree->Branch("pulse",t_pulse,"pulse[10]/F");
@@ -175,6 +184,7 @@ PulseTree::PulseTree(const edm::ParameterSet& iConfig)
    if (save_rechits) {
      outTree->Branch("ampl_multifit",t_multifit,"ampl_multifit[10]/F");
      outTree->Branch("ampl_weights",&t_weights,"ampl_weights/F");
+     outTree->Branch("ampl_corrected_multifit",&t_corrected_multifit,"ampl_corrected_multifit/F");
    }
 
    bx_to_keep = iConfig.getUntrackedParameter<std::vector<unsigned> >("filterBx",std::vector<unsigned>());
@@ -204,6 +214,7 @@ PulseTree::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetup)
    using namespace edm;
 
    iSetup.get<CaloGeometryRecord>().get(geometry);
+   iSetup.get<EcalGainRatiosRcd>().get(gRatio);
 
    t_run = iEvent.eventAuxiliary().run();
    t_lumi = iEvent.eventAuxiliary().luminosityBlock();
@@ -275,11 +286,16 @@ PulseTree::FillDigi(EcalDataFrame digi, const EcalUncalibratedRecHitCollection *
   t_pedestal_rms = 0;
   t_nevt = 0;
 
+  auto _gr = gRatio.product();
+  t_gainratios[0]=(*_gr)[t_id].gain12Over6();
+  t_gainratios[1]=t_gainratios[0]*(*_gr)[t_id].gain6Over1();
+
   if (!do_average) {
     auto detid = DetId(t_id);
     if (save_rechits){
       for (int j=0; j<10; j++) t_multifit[j] = 0;
       t_weights = 0;
+      t_corrected_multifit = 0;
       auto subGeom =  geometry->getSubdetectorGeometry(detid);
       auto cellGeom = subGeom->getGeometry(detid);
       t_eta = cellGeom->getPosition().eta();
@@ -290,6 +306,7 @@ PulseTree::FillDigi(EcalDataFrame digi, const EcalUncalibratedRecHitCollection *
       auto it2 = w_rechits->find(detid);
       if (it2==w_rechits->end()) std::cout << "Warning: rechit (weights) not found" << std::endl;
       else t_weights = it2->amplitude();
+      t_corrected_multifit = it->amplitude()*MultiFitParametricCorrection(it->amplitude(),t_eta);
       if (t_weights<min_rechit_amplitude_weights) return;
     }
     outTree->Fill();
@@ -330,6 +347,7 @@ PulseTree::WriteAverageOutput(){
   t_bx = 0;
   for (int j=0; j<10; j++) t_multifit[j] = 0;
   t_weights = 0;
+  t_corrected_multifit = 0;
 
   for (uint idx = 0; idx<summed_count.size(); idx++){
     float den = summed_count[idx];
@@ -340,6 +358,9 @@ PulseTree::WriteAverageOutput(){
     t_pedestal = summed_pedestal[idx].first/den;
     t_pedestal_rms = std::sqrt(summed_pedestal[idx].second/den - std::pow(summed_pedestal[idx].first/den,2));
     t_id = summed_index[idx].first;
+    auto _gr = gRatio.product();
+    t_gainratios[0]=(*_gr)[t_id].gain12Over6();
+    t_gainratios[1]=t_gainratios[0]*(*_gr)[t_id].gain6Over1();
     auto detid = DetId(t_id);
     auto subGeom =  geometry->getSubdetectorGeometry(detid);
     auto cellGeom = subGeom->getGeometry(detid);
@@ -347,6 +368,64 @@ PulseTree::WriteAverageOutput(){
     t_phi = cellGeom->getPosition().phi();
     t_nevt = summed_count[idx];
     outTree->Fill();
+  }
+
+}
+
+float
+PulseTree::MultiFitParametricCorrection(float amplitude_multifit_intime_uncal, float eta){
+
+  if (fabs(eta)<1.479){
+    if (amplitude_multifit_intime_uncal-2800.000000<200) return 1.000000;
+    else if (amplitude_multifit_intime_uncal-3200.000000<200) return 0.999503;
+    else if (amplitude_multifit_intime_uncal-3600.000000<200) return 0.998589;
+    else if (amplitude_multifit_intime_uncal-4000.000000<200) return 0.996788;
+    else if (amplitude_multifit_intime_uncal-4400.000000<200) return 1.000612;
+    else if (amplitude_multifit_intime_uncal-4800.000000<200) return 1.010879;
+    else if (amplitude_multifit_intime_uncal-5200.000000<200) return 1.025890;
+    else if (amplitude_multifit_intime_uncal-5600.000000<200) return 1.035207;
+    else if (amplitude_multifit_intime_uncal-6000.000000<200) return 1.047249;
+    else if (amplitude_multifit_intime_uncal-6400.000000<200) return 1.060303;
+    else if (amplitude_multifit_intime_uncal-6800.000000<200) return 1.070912;
+    else if (amplitude_multifit_intime_uncal-7200.000000<200) return 1.079619;
+    else if (amplitude_multifit_intime_uncal-7600.000000<200) return 1.086805;
+    else if (amplitude_multifit_intime_uncal-8000.000000<200) return 1.090260;
+    else if (amplitude_multifit_intime_uncal-8400.000000<200) return 1.066447;
+    else if (amplitude_multifit_intime_uncal-8800.000000<200) return 1.041410;
+    else if (amplitude_multifit_intime_uncal-9200.000000<200) return 1.024488;
+    else if (amplitude_multifit_intime_uncal-9600.000000<200) return 1.014497;
+    else if (amplitude_multifit_intime_uncal-10000.000000<200) return 1.016732;
+    else if (amplitude_multifit_intime_uncal-10400.000000<200) return 1.029175;
+    else if (amplitude_multifit_intime_uncal-10800.000000<200) return 1.032594;
+    else if (amplitude_multifit_intime_uncal-11200.000000<200) return 1.038157;
+    else if (amplitude_multifit_intime_uncal-11600.000000<200) return 1.045066;
+    else return 1.039888;
+      }
+  else {
+      if (amplitude_multifit_intime_uncal-2800.000000<200) return 1.000000;
+      else if (amplitude_multifit_intime_uncal-3200.000000<200) return 0.999389;
+      else if (amplitude_multifit_intime_uncal-3600.000000<200) return 0.998585;
+      else if (amplitude_multifit_intime_uncal-4000.000000<200) return 1.006239;
+      else if (amplitude_multifit_intime_uncal-4400.000000<200) return 1.008576;
+      else if (amplitude_multifit_intime_uncal-4800.000000<200) return 1.009653;
+      else if (amplitude_multifit_intime_uncal-5200.000000<200) return 1.010044;
+      else if (amplitude_multifit_intime_uncal-5600.000000<200) return 1.009461;
+      else if (amplitude_multifit_intime_uncal-6000.000000<200) return 1.009145;
+      else if (amplitude_multifit_intime_uncal-6400.000000<200) return 1.009076;
+      else if (amplitude_multifit_intime_uncal-6800.000000<200) return 1.009964;
+      else if (amplitude_multifit_intime_uncal-7200.000000<200) return 1.008127;
+      else if (amplitude_multifit_intime_uncal-7600.000000<200) return 1.008139;
+      else if (amplitude_multifit_intime_uncal-8000.000000<200) return 1.009407;
+      else if (amplitude_multifit_intime_uncal-8400.000000<200) return 1.009913;
+      else if (amplitude_multifit_intime_uncal-8800.000000<200) return 1.008228;
+      else if (amplitude_multifit_intime_uncal-9200.000000<200) return 1.007341;
+      else if (amplitude_multifit_intime_uncal-9600.000000<200) return 1.006882;
+      else if (amplitude_multifit_intime_uncal-10000.000000<200) return 1.007504;
+      else if (amplitude_multifit_intime_uncal-10400.000000<200) return 1.006405;
+      else if (amplitude_multifit_intime_uncal-10800.000000<200) return 1.006475;
+      else if (amplitude_multifit_intime_uncal-11200.000000<200) return 1.004366;
+      else if (amplitude_multifit_intime_uncal-11600.000000<200) return 1.004993;
+      else return 1.004440;
   }
 
 }
