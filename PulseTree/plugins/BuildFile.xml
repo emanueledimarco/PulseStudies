@@ -9,4 +9,6 @@
 <use name="Geometry/EcalAlgo"/>
 <use name="CondFormats/EcalObjects"/>
 <use name="CondFormats/DataRecord"/>
+<use name="CalibCalorimetry/EcalLaserCorrection"/>
+<use name="PulseStudies/PulseTree"/>
 <flags EDM_PLUGIN="1"/>

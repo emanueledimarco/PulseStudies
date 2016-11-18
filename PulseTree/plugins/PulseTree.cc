@@ -45,6 +45,8 @@
 
 #include "TTree.h"
 
+#include "PulseStudies/PulseTree/interface/RecHitSampleFourCorrector.h"
+
 //
 // class declaration
 //
@@ -72,10 +74,7 @@ class PulseTree : public edm::one::EDAnalyzer<edm::one::SharedResources>  {
   bool FilterBx(unsigned bx);
   void WriteAverageOutput();
 
-  float MultiFitParametricCorrection(float amplitude_multifit_intime_uncal, float chi2, UInt_t recoflags);
-  double CorrectionFunction1(double amplitude_multifit_intime_uncal, double chi2);
-  double CorrectionFunction2(double amplitude_multifit_intime_uncal, double chi2);
-  double CorrectionFunction3(double amplitude_multifit_intime_uncal, double chi2);
+  RecHitSampleFourCorrector corrector_;
 
       // ----------member data ---------------------------
 
@@ -326,7 +325,7 @@ PulseTree::FillDigi(EcalDataFrame digi, const EcalUncalibratedRecHitCollection *
       auto it2 = w_rechits->find(detid);
       if (it2==w_rechits->end()) std::cout << "Warning: rechit (weights) not found" << std::endl;
       else t_weights = it2->amplitude();
-      t_corrected_multifit = it->amplitude()/MultiFitParametricCorrection(it->amplitude(),t_chi2,t_recoflags);
+      t_corrected_multifit = it->amplitude()/corrector_.MultiFitParametricCorrection(it->amplitude(),t_chi2,t_recoflags);
       if (t_weights<min_rechit_amplitude_weights) return;
     }
     outTree->Fill();
@@ -396,57 +395,6 @@ PulseTree::WriteAverageOutput(){
   }
 
 }
-
-float
-PulseTree::MultiFitParametricCorrection(float amplitude_multifit_intime_uncal, float chi2, UInt_t recoflag){
-
-  float x = amplitude_multifit_intime_uncal;
-  bool has_g6 = ((recoflag/16)%2==1);
-  bool has_g1 = ((recoflag/32)%2==1);
-
-  if (!has_g1 && !has_g6) return 1; // no gain switch
-  else if (has_g6 && !has_g1) {
-    if (x>5000 && chi2<250) return 1;
-    else return CorrectionFunction1(x,chi2);
-  }
-  else if (!has_g6 && has_g1){
-    if (chi2>6000) return CorrectionFunction1(x,chi2);
-    else if (x<4000 || x>7000) return 1;
-    else return CorrectionFunction3(x,chi2);
-  }
-  else if (has_g1 && has_g6) return CorrectionFunction2(x,chi2);
-  else return 1;
-
-}
-
-
-double PulseTree::CorrectionFunction1(double x, double chi2){
-  if (x<4000) return 1;
-  if (x>10000) x=10000;
-  double p0   =    0.0567521;
-  double p1   =  0.000609019;
-  double p2   = -1.35626e-07;
-  double p3   =  1.21114e-11;
-  double p4   = -3.84392e-16;
-  return p0+p1*x+p2*x*x+p3*x*x*x+p4*x*x*x*x;
-}
-double PulseTree::CorrectionFunction2(double x, double chi2){
-  if (x<7000) return 1;
-  if (x>18000) x=18000;
-  double p0   =    0.770166;
-  double p1   = 7.22759e-05;
-  double p2   = -6.8392e-09;
-  double p3   = 1.67209e-13;
-  return p0+p1*x+p2*x*x+p3*x*x*x;
-}
-double PulseTree::CorrectionFunction3(double x, double chi2){
-  if (x<4000 || x>7000) return 1;
-  double p0   =       -2.391;
-  double p1   =  0.000997096;
-  double p2   = -8.34263e-08;
-  return p0+p1*x+p2*x*x;
-}
-
 
 // ------------ method called once each job just before starting event loop  ------------
 void 
