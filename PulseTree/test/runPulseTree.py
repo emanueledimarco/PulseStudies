@@ -91,8 +91,11 @@ process.ecalMultiFitUncalibRecHit.EBdigiCollection = process.PulseTree.EBDigiCol
 process.ecalMultiFitUncalibRecHit.EEdigiCollection = process.PulseTree.EEDigiCollection
 process.ecalMultiFitUncalibRecHit.algoPSet.useLumiInfoRunHeader = cms.bool(False)
 
+process.ecalMultiFitUncalibRecHit2 = process.ecalMultiFitUncalibRecHit.clone()
+process.ecalMultiFitUncalibRecHit2.algoPSet.gainSwitchFix = cms.bool(True)
+
 process.ecalDigis_step = cms.Path(process.ecalDigis)
-process.multifit = cms.Path(process.ecalMultiFitUncalibRecHit)
+process.multifit = cms.Path(process.ecalMultiFitUncalibRecHit * process.ecalMultiFitUncalibRecHit2)
 process.weights = cms.Path(process.ecalUncalibRecHit)
 
 process.PulseTree_step = cms.Path(process.PulseTree)
